@@ -101,6 +101,12 @@ function formatDate(ts) {
   return d.toLocaleDateString("ro-RO", { day: "numeric", month: "short", year: "numeric" });
 }
 
+function formatAmount(n) {
+  if (n === null || n === undefined || isNaN(n)) return "0";
+  const rounded = Math.round(n * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 function loadLS(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -233,7 +239,7 @@ const BADGES = [
     desc: "cel mai generos, i se datorează cel mai mult",
     pick: (stats) => stats.slice().sort((a, b) => b.net - a.net)[0],
     show: (s) => s.net > 0,
-    metric: (s) => `i se cuvin ${s.net} lei net`,
+    metric: (s) => `i se cuvin ${formatAmount(s.net)} lei net`,
     color: "from-emerald-400 to-teal-500",
   },
   {
@@ -246,7 +252,7 @@ const BADGES = [
         .slice()
         .sort((a, b) => a.given + a.received - (b.given + b.received))[0],
     show: (s) => s.count > 0,
-    metric: (s) => `doar ${Math.round(s.given + s.received)} lei mișcați în total`,
+    metric: (s) => `doar ${formatAmount(s.given + s.received)} lei mișcați în total`,
     color: "from-gray-400 to-slate-500",
   },
   {
@@ -264,7 +270,7 @@ const BADGES = [
     desc: "a plătit cel mai mult în total pentru alții",
     pick: (stats) => stats.slice().sort((a, b) => b.given - a.given)[0],
     show: (s) => s.given > 0,
-    metric: (s) => `${Math.round(s.given)} lei cinste date`,
+    metric: (s) => `${formatAmount(s.given)} lei cinste date`,
     color: "from-amber-400 to-orange-500",
   },
   {
@@ -273,7 +279,7 @@ const BADGES = [
     desc: "cel mai responsabil, își achită mereu datoriile",
     pick: (stats) => stats.slice().sort((a, b) => b.repaid - a.repaid)[0],
     show: (s) => s.repaid > 0,
-    metric: (s) => `${Math.round(s.repaid)} lei rambursați`,
+    metric: (s) => `${formatAmount(s.repaid)} lei rambursați`,
     color: "from-blue-400 to-indigo-500",
   },
   {
@@ -285,7 +291,7 @@ const BADGES = [
         .filter((s) => s.given === 0 && s.received > 0)
         .sort((a, b) => b.received - a.received)[0],
     show: () => true,
-    metric: (s) => `a primit ${Math.round(s.received)} lei, a dat 0`,
+    metric: (s) => `a primit ${formatAmount(s.received)} lei, a dat 0`,
     color: "from-yellow-400 to-amber-500",
   },
   {
@@ -315,7 +321,7 @@ const MONTHLY_AWARDS = [
     desc: "a plătit cel mai mult luna asta",
     pick: (stats) => stats.slice().sort((a, b) => b.given - a.given)[0],
     show: (s) => s.given > 0,
-    metric: (s) => `${Math.round(s.given)} lei cheltuiți`,
+    metric: (s) => `${formatAmount(s.given)} lei cheltuiți`,
     color: "from-amber-400 to-yellow-500",
   },
   {
@@ -328,7 +334,7 @@ const MONTHLY_AWARDS = [
         .slice()
         .sort((a, b) => a.given - b.given)[0],
     show: (s) => s.count > 0,
-    metric: (s) => `doar ${Math.round(s.given)} lei cheltuiți`,
+    metric: (s) => `doar ${formatAmount(s.given)} lei cheltuiți`,
     color: "from-emerald-400 to-green-500",
   },
   {
@@ -346,7 +352,7 @@ const MONTHLY_AWARDS = [
     desc: "și-a achitat cele mai multe datorii luna asta",
     pick: (stats) => stats.slice().sort((a, b) => b.repaid - a.repaid)[0],
     show: (s) => s.repaid > 0,
-    metric: (s) => `${Math.round(s.repaid)} lei rambursați`,
+    metric: (s) => `${formatAmount(s.repaid)} lei rambursați`,
     color: "from-blue-400 to-cyan-500",
   },
   {
@@ -388,12 +394,19 @@ export default function App() {
   const [showStats, setShowStats] = useState(false);
   const [showWheel, setShowWheel] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [statsPeriod, setStatsPeriod] = useState("month");
   const [editingEntry, setEditingEntry] = useState(null);
   const [notifOn, setNotifOn] = useState(false);
 
   const [form, setForm] = useState({ amount: "", targets: [], note: "", type: "cinste", photos: [], includeMe: false });
 
   const prevEntryIdsRef = useRef(null);
+
+  useEffect(() => {
+    if (!err) return;
+    const t = setTimeout(() => setErr(""), 4500);
+    return () => clearTimeout(t);
+  }, [err]);
 
   useEffect(() => {
     const unsub = onValue(
@@ -660,7 +673,7 @@ export default function App() {
                     bal === 0 ? "text-gray-400" : bal > 0 ? "text-green-600" : "text-red-600"
                   }`}
                 >
-                  {bal === 0 ? "achitat ✓" : bal > 0 ? `îți datorează ${bal} lei` : `îi datorezi ${Math.abs(bal)} lei`}
+                  {bal === 0 ? "achitat ✓" : bal > 0 ? `îți datorează ${formatAmount(bal)} lei` : `îi datorezi ${formatAmount(Math.abs(bal))} lei`}
                 </p>
               </div>
             </div>
@@ -707,8 +720,15 @@ export default function App() {
 
   const received = entries.filter((e) => e.to === me);
   const given = entries.filter((e) => e.from === me);
-  const totalReceived = received.reduce((s, e) => s + e.amount, 0);
-  const totalGiven = given.reduce((s, e) => s + e.amount, 0);
+  const receivedThisMonth = monthEntries(received);
+  const givenThisMonth = monthEntries(given);
+  const totalReceivedMonth = receivedThisMonth.reduce((s, e) => s + e.amount, 0);
+  const totalGivenMonth = givenThisMonth.reduce((s, e) => s + e.amount, 0);
+  const totalReceivedAllTime = received.reduce((s, e) => s + e.amount, 0);
+  const totalGivenAllTime = given.reduce((s, e) => s + e.amount, 0);
+  const totalReceived = statsPeriod === "month" ? totalReceivedMonth : totalReceivedAllTime;
+  const totalGiven = statsPeriod === "month" ? totalGivenMonth : totalGivenAllTime;
+  const monthLabel = RO_MONTHS[new Date().getMonth()];
   const myStats = computeStats(members, entries).find((s) => s.name === me);
 
   return (
@@ -742,7 +762,7 @@ export default function App() {
               {saveStatus === "error" && <span className="text-[11px] text-red-600">eroare</span>}
               <button
                 onClick={toggleNotif}
-                title="Notificări pe acest device, doar pentru contul tău"
+                title="Notificări doar pe acest device, cât timp ai aplicația deschisă sau în fundal (nu și cu telefonul complet închis/oprit)"
                 className={`p-2 rounded-full border transition-colors active:scale-90 ${
                   notifOn ? "border-amber-400 text-amber-600 bg-amber-50" : "border-gray-300 text-gray-400"
                 }`}
@@ -760,16 +780,26 @@ export default function App() {
 
           <div className="grid grid-cols-2 gap-3 mt-5">
             <div className="rounded-2xl border border-gray-200/70 bg-white/70 backdrop-blur-sm shadow-sm px-4 py-3 hover:shadow-md transition-shadow">
-              <p className="text-[11px] uppercase tracking-wider text-gray-500">Ai primit</p>
+              <p className="text-[11px] uppercase tracking-wider text-gray-500">
+                Ai primit {statsPeriod === "month" ? `· ${monthLabel}` : "· mereu"}
+              </p>
               <p className="text-2xl font-extrabold bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent mt-1">
-                {totalReceived.toFixed(0)} lei
+                {formatAmount(totalReceived)} lei
               </p>
             </div>
             <div className="rounded-2xl border border-gray-200/70 bg-white/70 backdrop-blur-sm shadow-sm px-4 py-3 hover:shadow-md transition-shadow">
-              <p className="text-[11px] uppercase tracking-wider text-gray-500">Ai dat</p>
-              <p className="text-2xl font-extrabold text-gray-700 mt-1">{totalGiven.toFixed(0)} lei</p>
+              <p className="text-[11px] uppercase tracking-wider text-gray-500">
+                Ai dat {statsPeriod === "month" ? `· ${monthLabel}` : "· mereu"}
+              </p>
+              <p className="text-2xl font-extrabold text-gray-700 mt-1">{formatAmount(totalGiven)} lei</p>
             </div>
           </div>
+          <button
+            onClick={() => setStatsPeriod((p) => (p === "month" ? "allTime" : "month"))}
+            className="text-[11px] text-amber-600 mt-2 underline decoration-dotted active:scale-95 transition-transform"
+          >
+            {statsPeriod === "month" ? "vezi totalul din tot timpul" : `înapoi la luna ${monthLabel.toLowerCase()}`}
+          </button>
 
           {myStats && (
             <div className="flex flex-wrap gap-1.5 mt-3">
@@ -787,7 +817,7 @@ export default function App() {
         </div>
 
         {err && (
-          <div className="mx-5 mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 animate-fadein">
+          <div className="fixed top-4 inset-x-4 z-50 text-sm text-red-700 bg-white shadow-lg border border-red-200 rounded-xl px-4 py-3 animate-slideup">
             {err}
           </div>
         )}
@@ -817,11 +847,11 @@ export default function App() {
                     <span className="text-sm text-gray-400">achitat ✓</span>
                   ) : b.net > 0 ? (
                     <span className="text-sm font-semibold text-green-700 bg-green-100 px-2.5 py-1 rounded-full">
-                      îți datorează {b.net} lei
+                      îți datorează {formatAmount(b.net)} lei
                     </span>
                   ) : (
                     <span className="text-sm font-semibold text-red-700 bg-red-100 px-2.5 py-1 rounded-full">
-                      îi datorezi {Math.abs(b.net)} lei
+                      îi datorezi {formatAmount(Math.abs(b.net))} lei
                     </span>
                   )}
                 </button>
@@ -1032,7 +1062,7 @@ function EntryCard({ e, me, deleteEntry, onPhoto, onEdit, confirmDeleteEntry, se
           </p>
           <p className="text-xs text-gray-500 mt-0.5">
             {formatDate(e.date)}
-            {e.splitAll ? ` · din ${e.totalAmount.toFixed(0)} lei împărțit la ${e.splitCount}` : ""}
+            {e.splitAll ? ` · din ${formatAmount(e.totalAmount)} lei împărțit la ${e.splitCount}` : ""}
             {e.note ? ` · ${e.note}` : ""}
           </p>
         </div>
@@ -1062,7 +1092,7 @@ function EntryCard({ e, me, deleteEntry, onPhoto, onEdit, confirmDeleteEntry, se
                 onEdit ? "cursor-pointer" : ""
               }`}
             >
-              {e.amount.toFixed(0)} lei
+              {formatAmount(e.amount)} lei
             </span>
             {deleteEntry && (
               <button
@@ -1283,7 +1313,7 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
 
   const chosenCount = form.targets.length > 0 ? form.targets.length : others.length;
   const divisorPreview = form.type === "cinste" && form.includeMe ? chosenCount + 1 : chosenCount;
-  const share = form.amount ? (parseFloat(form.amount) / divisorPreview).toFixed(1) : null;
+  const share = form.amount ? formatAmount(parseFloat(form.amount) / divisorPreview) : null;
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center z-20 px-0 sm:px-4 animate-fadein">
@@ -1565,7 +1595,7 @@ function StatsScreen({ members, entries, onClose }) {
                 }`}
               >
                 {s.net > 0 ? "+" : ""}
-                {s.net} lei
+                {formatAmount(s.net)} lei
               </span>
             </div>
           ))}
@@ -1843,7 +1873,7 @@ function CalendarModal({ entries, onClose, onPhoto }) {
                 )}
                 {total > 0 && !active && (
                   <span className="absolute -bottom-1 text-[8px] text-amber-600 font-semibold">
-                    {Math.round(total)}
+                    {formatAmount(total)}
                   </span>
                 )}
               </button>
@@ -1885,7 +1915,7 @@ function CalendarModal({ entries, onClose, onPhoto }) {
                           {e.note && <p className="text-xs text-gray-500 truncate">{e.note}</p>}
                         </div>
                       </div>
-                      <span className="text-sm font-bold text-amber-600 shrink-0">{e.amount.toFixed(0)} lei</span>
+                      <span className="text-sm font-bold text-amber-600 shrink-0">{formatAmount(e.amount)} lei</span>
                     </div>
                   );
                 })}
