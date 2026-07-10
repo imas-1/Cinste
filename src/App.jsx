@@ -12,6 +12,11 @@ import {
   Scale,
   Trash2,
   Camera,
+  Bell,
+  BellOff,
+  Dices,
+  Award,
+  Calendar as CalendarIcon,
 } from "lucide-react";
 import { db } from "./firebase";
 import { ref, onValue, set, push, remove } from "firebase/database";
@@ -31,6 +36,8 @@ const AVATAR_GRADIENTS = [
   "from-red-400 to-orange-500",
 ];
 
+const WHEEL_COLORS = ["#f59e0b", "#ec4899", "#8b5cf6", "#10b981", "#3b82f6", "#f43f5e", "#14b8a6", "#eab308"];
+
 function colorFor(name) {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -41,7 +48,7 @@ function Avatar({ name, size = 10 }) {
   const initial = name?.[0]?.toUpperCase() || "?";
   return (
     <div
-      className={`w-${size} h-${size} shrink-0 rounded-full bg-gradient-to-br ${colorFor(
+      className={`shrink-0 rounded-full bg-gradient-to-br ${colorFor(
         name
       )} flex items-center justify-center text-white font-bold shadow-sm`}
       style={{ width: size * 4, height: size * 4, fontSize: size * 1.4 }}
@@ -126,6 +133,244 @@ function fileToCompressedBase64(file) {
   });
 }
 
+function photosOf(e) {
+  if (e.photos && e.photos.length) return e.photos;
+  if (e.photo) return [e.photo];
+  return [];
+}
+
+function playChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const notes = [660, 880];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + i * 0.09 + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.09 + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + i * 0.09);
+      osc.stop(ctx.currentTime + i * 0.09 + 0.26);
+    });
+  } catch (e) {}
+  if (navigator.vibrate) navigator.vibrate([25, 30, 25]);
+}
+
+function exportCSV(entries, members) {
+  const rows = [["De la", "Către", "Sumă", "Tip", "Notă", "Dată"]];
+  entries
+    .slice()
+    .sort((a, b) => (a.date || 0) - (b.date || 0))
+    .forEach((e) => {
+      rows.push([e.from, e.to, e.amount, e.type, e.note || "", formatDate(e.date)]);
+    });
+  const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "caietul-de-cinste.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function computeStats(members, entries) {
+  const stats = {};
+  members.forEach((m) => {
+    stats[m] = {
+      name: m,
+      given: 0,
+      received: 0,
+      repaid: 0,
+      repaidReceived: 0,
+      count: 0,
+      photos: 0,
+      net: 0,
+      foodCount: 0,
+      firstCinsteToAll: false,
+    };
+  });
+  const FOOD_WORDS = ["pizza", "shaorma", "restaurant", "terasa", "terasă", "mancare", "mâncare", "bere", "cafea", "burger", "suc"];
+  entries.forEach((e) => {
+    if (!stats[e.from] || !stats[e.to]) return;
+    if (e.type === "cinste") {
+      stats[e.from].given += e.amount;
+      stats[e.to].received += e.amount;
+      stats[e.from].net += e.amount;
+      stats[e.to].net -= e.amount;
+      if (e.splitAll) stats[e.from].firstCinsteToAll = true;
+      const noteLower = (e.note || "").toLowerCase();
+      if (FOOD_WORDS.some((w) => noteLower.includes(w))) stats[e.from].foodCount += 1;
+    } else {
+      stats[e.from].repaid += e.amount;
+      stats[e.to].repaidReceived += e.amount;
+      stats[e.from].net += e.amount;
+      stats[e.to].net -= e.amount;
+    }
+    stats[e.from].count += 1;
+    stats[e.from].photos += photosOf(e).length;
+  });
+  return Object.values(stats).map((s) => ({ ...s, net: Math.round(s.net * 100) / 100 }));
+}
+
+const BADGES = [
+  {
+    key: "biggestDebtor",
+    title: "👑 Datorul Suprem",
+    desc: "cel mai mare restanțier al grupului",
+    pick: (stats) => stats.slice().sort((a, b) => a.net - b.net)[0],
+    show: (s) => s.net < 0,
+    metric: (s) => `datorează ${Math.abs(s.net)} lei net`,
+    color: "from-red-400 to-rose-500",
+  },
+  {
+    key: "biggestSponsor",
+    title: "💸 Sponsorul Grupului",
+    desc: "cel mai generos, i se datorează cel mai mult",
+    pick: (stats) => stats.slice().sort((a, b) => b.net - a.net)[0],
+    show: (s) => s.net > 0,
+    metric: (s) => `i se cuvin ${s.net} lei net`,
+    color: "from-emerald-400 to-teal-500",
+  },
+  {
+    key: "ghost",
+    title: "👻 Fantoma Grupului",
+    desc: "nu prea dă, dar nici nu prea primește",
+    pick: (stats) =>
+      stats
+        .filter((s) => s.count > 0)
+        .slice()
+        .sort((a, b) => a.given + a.received - (b.given + b.received))[0],
+    show: (s) => s.count > 0,
+    metric: (s) => `doar ${Math.round(s.given + s.received)} lei mișcați în total`,
+    color: "from-gray-400 to-slate-500",
+  },
+  {
+    key: "mostActive",
+    title: "⚡ Cel Mai Activ",
+    desc: "cele mai multe cinste înregistrate",
+    pick: (stats) => stats.slice().sort((a, b) => b.count - a.count)[0],
+    show: (s) => s.count > 0,
+    metric: (s) => `${s.count} tranzacții`,
+    color: "from-violet-400 to-purple-500",
+  },
+  {
+    key: "biggestGiver",
+    title: "🎩 Domnul Cinste",
+    desc: "a plătit cel mai mult în total pentru alții",
+    pick: (stats) => stats.slice().sort((a, b) => b.given - a.given)[0],
+    show: (s) => s.given > 0,
+    metric: (s) => `${Math.round(s.given)} lei cinste date`,
+    color: "from-amber-400 to-orange-500",
+  },
+  {
+    key: "repaymentKing",
+    title: "🤝 Regele Rambursărilor",
+    desc: "cel mai responsabil, își achită mereu datoriile",
+    pick: (stats) => stats.slice().sort((a, b) => b.repaid - a.repaid)[0],
+    show: (s) => s.repaid > 0,
+    metric: (s) => `${Math.round(s.repaid)} lei rambursați`,
+    color: "from-blue-400 to-indigo-500",
+  },
+  {
+    key: "stingy",
+    title: "🪙 Zgârcitul Simpatic",
+    desc: "primește cinste dar încă n-a dat niciuna",
+    pick: (stats) =>
+      stats
+        .filter((s) => s.given === 0 && s.received > 0)
+        .sort((a, b) => b.received - a.received)[0],
+    show: () => true,
+    metric: (s) => `a primit ${Math.round(s.received)} lei, a dat 0`,
+    color: "from-yellow-400 to-amber-500",
+  },
+  {
+    key: "photographer",
+    title: "📸 Fotograful Oficial",
+    desc: "cele mai multe poze atașate",
+    pick: (stats) => stats.slice().sort((a, b) => b.photos - a.photos)[0],
+    show: (s) => s.photos > 0,
+    metric: (s) => `${s.photos} poze`,
+    color: "from-sky-400 to-blue-500",
+  },
+];
+
+function monthEntries(entries) {
+  const now = new Date();
+  return entries.filter((e) => {
+    if (!e.date) return false;
+    const d = new Date(e.date);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  });
+}
+
+const MONTHLY_AWARDS = [
+  {
+    key: "regeleCinstei",
+    title: "🏆 Regele Cinstei",
+    desc: "a plătit cel mai mult luna asta",
+    pick: (stats) => stats.slice().sort((a, b) => b.given - a.given)[0],
+    show: (s) => s.given > 0,
+    metric: (s) => `${Math.round(s.given)} lei cheltuiți`,
+    color: "from-amber-400 to-yellow-500",
+  },
+  {
+    key: "economul",
+    title: "💰 Economul",
+    desc: "a cheltuit cel mai puțin luna asta",
+    pick: (stats) =>
+      stats
+        .filter((s) => s.count > 0)
+        .slice()
+        .sort((a, b) => a.given - b.given)[0],
+    show: (s) => s.count > 0,
+    metric: (s) => `doar ${Math.round(s.given)} lei cheltuiți`,
+    color: "from-emerald-400 to-green-500",
+  },
+  {
+    key: "chefMaster",
+    title: "🍕 Chef Master",
+    desc: "cele mai multe cheltuieli la mâncare",
+    pick: (stats) => stats.slice().sort((a, b) => b.foodCount - a.foodCount)[0],
+    show: (s) => s.foodCount > 0,
+    metric: (s) => `${s.foodCount} cheltuieli cu mâncare`,
+    color: "from-orange-400 to-red-500",
+  },
+  {
+    key: "speedPayer",
+    title: "⚡ Speed Payer",
+    desc: "și-a achitat cele mai multe datorii luna asta",
+    pick: (stats) => stats.slice().sort((a, b) => b.repaid - a.repaid)[0],
+    show: (s) => s.repaid > 0,
+    metric: (s) => `${Math.round(s.repaid)} lei rambursați`,
+    color: "from-blue-400 to-cyan-500",
+  },
+  {
+    key: "restantierul",
+    title: "😅 Restanțierul",
+    desc: "are cele mai multe datorii neachitate luna asta",
+    pick: (stats) => stats.slice().sort((a, b) => a.net - b.net)[0],
+    show: (s) => s.net < 0,
+    metric: (s) => `${Math.abs(s.net)} lei neachitați`,
+    color: "from-red-400 to-pink-500",
+  },
+];
+
+const ACHIEVEMENTS = [
+  { key: "first", label: "Prima Cinste", icon: "🎉", check: (s) => s.count > 0 },
+  { key: "hundred", label: "100+ lei cheltuiți", icon: "💯", check: (s) => s.given >= 100 },
+  { key: "fivehundred", label: "500+ lei cheltuiți", icon: "🤑", check: (s) => s.given >= 500 },
+  { key: "generous", label: "Cinste la toată gașca", icon: "🎊", check: (s) => s.firstCinsteToAll },
+  { key: "photo", label: "Prima poză atașată", icon: "📷", check: (s) => s.photos > 0 },
+  { key: "settled", label: "Cont la zi", icon: "✅", check: (s) => s.net === 0 && s.count > 0 },
+  { key: "responsible", label: "Prima rambursare", icon: "🤝", check: (s) => s.repaid > 0 },
+  { key: "chef", label: "Gurmandul", icon: "🍕", check: (s) => s.foodCount >= 3 },
+];
+
 export default function App() {
   const [members, setMembers] = useState([]);
   const [entries, setEntries] = useState([]);
@@ -134,13 +379,21 @@ export default function App() {
   const [newMemberName, setNewMemberName] = useState("");
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmDeleteEntry, setConfirmDeleteEntry] = useState(null);
   const [viewingMember, setViewingMember] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [err, setErr] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const [confetti, setConfetti] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [showWheel, setShowWheel] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [notifOn, setNotifOn] = useState(false);
 
-  const [form, setForm] = useState({ amount: "", targets: [], note: "", type: "cinste", photo: null, excludeMe: false });
+  const [form, setForm] = useState({ amount: "", targets: [], note: "", type: "cinste", photos: [], includeMe: false });
+
+  const prevEntryIdsRef = useRef(null);
 
   useEffect(() => {
     const unsub = onValue(
@@ -174,11 +427,60 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    if (!me) return;
+    setNotifOn(loadLS(`cinsteNotif:${me}`, false));
+  }, [me]);
+
+  useEffect(() => {
+    if (!me) return;
+    const currentIds = new Set(entries.map((e) => e.id));
+    if (prevEntryIdsRef.current) {
+      entries.forEach((e) => {
+        if (
+          e.to === me &&
+          e.from !== me &&
+          !prevEntryIdsRef.current.has(e.id) &&
+          notifOn &&
+          typeof Notification !== "undefined" &&
+          Notification.permission === "granted"
+        ) {
+          try {
+            new Notification("Cinste nouă! 🎉", {
+              body: `${e.from} ți-a făcut cinste de ${e.amount} lei`,
+            });
+          } catch (err) {}
+        }
+      });
+    }
+    prevEntryIdsRef.current = currentIds;
+  }, [entries, me, notifOn]);
+
   function setMe(name) {
     setMeState(name);
     try {
       localStorage.setItem(ME_KEY, JSON.stringify(name));
     } catch (e) {}
+  }
+
+  function toggleNotif() {
+    if (!me) return;
+    const next = !notifOn;
+    if (next && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+      Notification.requestPermission().then((perm) => {
+        if (perm === "granted") {
+          setNotifOn(true);
+          try {
+            localStorage.setItem(`cinsteNotif:${me}`, JSON.stringify(true));
+          } catch (e) {}
+        }
+      });
+    } else {
+      setNotifOn(next);
+      try {
+        localStorage.setItem(`cinsteNotif:${me}`, JSON.stringify(next));
+      } catch (e) {}
+    }
   }
 
   async function persistMembers(next) {
@@ -221,8 +523,8 @@ export default function App() {
       return;
     }
     const isSplit = chosen.length > 1 && form.type === "cinste";
-    const divisor = form.type === "cinste" && form.excludeMe ? chosen.length + 1 : chosen.length;
-    const share = isSplit || form.excludeMe ? Math.round((amt / divisor) * 100) / 100 : amt;
+    const divisor = form.type === "cinste" && form.includeMe ? chosen.length + 1 : chosen.length;
+    const share = isSplit || form.includeMe ? Math.round((amt / divisor) * 100) / 100 : amt;
 
     setSaveStatus("saving");
     try {
@@ -233,21 +535,22 @@ export default function App() {
             to: target,
             amount: share,
             totalAmount: amt,
-            splitAll: isSplit || form.excludeMe,
+            splitAll: isSplit || form.includeMe,
             splitCount: divisor,
             note: form.note.trim(),
             type: form.type,
             date: Date.now(),
           };
-          if (form.photo) payload.photo = form.photo;
+          if (form.photos.length) payload.photos = form.photos;
           return push(ENTRIES_REF, payload);
         })
       );
       setSaveStatus("saved");
       setConfetti(true);
+      playChime();
       setTimeout(() => setSaveStatus(""), 1200);
       setTimeout(() => setConfetti(false), 1000);
-      setForm({ amount: "", targets: [], note: "", type: "cinste", photo: null, excludeMe: false });
+      setForm({ amount: "", targets: [], note: "", type: "cinste", photos: [], includeMe: false });
       setShowAddEntry(false);
       setErr("");
     } catch (e) {
@@ -259,9 +562,45 @@ export default function App() {
   async function deleteEntry(id) {
     try {
       await remove(ref(db, "cinsteEntries/" + id));
+      setConfirmDeleteEntry(null);
     } catch (e) {
       setErr("Nu am putut șterge: " + e.message);
     }
+  }
+
+  async function editEntryAmount(id, newAmount) {
+    try {
+      await set(ref(db, "cinsteEntries/" + id + "/amount"), newAmount);
+      setEditingEntry(null);
+    } catch (e) {
+      setErr("Nu am putut edita: " + e.message);
+    }
+  }
+
+  async function settleWithMember(otherName, netFromMyPerspective) {
+    if (netFromMyPerspective === 0) return;
+    const amount = Math.abs(netFromMyPerspective);
+    const from = netFromMyPerspective < 0 ? me : otherName;
+    const to = netFromMyPerspective < 0 ? otherName : me;
+    try {
+      await push(ENTRIES_REF, {
+        from,
+        to,
+        amount,
+        totalAmount: amount,
+        splitAll: false,
+        splitCount: 1,
+        note: "achitat definitiv",
+        type: "rambursare",
+        date: Date.now(),
+      });
+    } catch (e) {
+      setErr("Nu am putut marca achitat: " + e.message);
+    }
+  }
+
+  async function recordWheelResult(loser, participants) {
+    // Roata e doar pentru distracție — nu scriem nimic în istoricul financiar.
   }
 
   if (!me) {
@@ -325,6 +664,14 @@ export default function App() {
                 </p>
               </div>
             </div>
+            {bal !== 0 && (
+              <button
+                onClick={() => settleWithMember(viewingMember, bal)}
+                className="mt-3 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-300 rounded-full px-3 py-1.5 hover:bg-amber-100 transition-colors active:scale-95"
+              >
+                ✓ Marchează ca achitat definitiv
+              </button>
+            )}
           </div>
           <div className="px-5 mt-5 space-y-2">
             {withThem.length === 0 ? (
@@ -337,13 +684,23 @@ export default function App() {
                   me={me}
                   onPhoto={setLightbox}
                   deleteEntry={e.from === me ? deleteEntry : null}
+                  onEdit={e.from === me ? () => setEditingEntry(e) : null}
+                  confirmDeleteEntry={confirmDeleteEntry}
+                  setConfirmDeleteEntry={setConfirmDeleteEntry}
                   delay={i * 40}
                 />
               ))
             )}
           </div>
         </div>
-        {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+        {lightbox && <Lightbox photos={lightbox} onClose={() => setLightbox(null)} />}
+        {editingEntry && (
+          <EditAmountModal
+            entry={editingEntry}
+            onSave={(amt) => editEntryAmount(editingEntry.id, amt)}
+            onClose={() => setEditingEntry(null)}
+          />
+        )}
       </>
     );
   }
@@ -352,6 +709,7 @@ export default function App() {
   const given = entries.filter((e) => e.from === me);
   const totalReceived = received.reduce((s, e) => s + e.amount, 0);
   const totalGiven = given.reduce((s, e) => s + e.amount, 0);
+  const myStats = computeStats(members, entries).find((s) => s.name === me);
 
   return (
     <>
@@ -383,6 +741,15 @@ export default function App() {
               )}
               {saveStatus === "error" && <span className="text-[11px] text-red-600">eroare</span>}
               <button
+                onClick={toggleNotif}
+                title="Notificări pe acest device, doar pentru contul tău"
+                className={`p-2 rounded-full border transition-colors active:scale-90 ${
+                  notifOn ? "border-amber-400 text-amber-600 bg-amber-50" : "border-gray-300 text-gray-400"
+                }`}
+              >
+                {notifOn ? <Bell size={15} /> : <BellOff size={15} />}
+              </button>
+              <button
                 onClick={() => setMe(null)}
                 className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 transition-colors px-3 py-2 rounded-full border border-gray-300 active:scale-95"
               >
@@ -403,6 +770,20 @@ export default function App() {
               <p className="text-2xl font-extrabold text-gray-700 mt-1">{totalGiven.toFixed(0)} lei</p>
             </div>
           </div>
+
+          {myStats && (
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {ACHIEVEMENTS.filter((a) => a.check(myStats)).map((a) => (
+                <span
+                  key={a.key}
+                  title={a.label}
+                  className="text-xs bg-white/70 border border-gray-200 rounded-full px-2 py-1 flex items-center gap-1"
+                >
+                  {a.icon} {a.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {err && (
@@ -464,7 +845,10 @@ export default function App() {
           empty="Nu ai făcut cinste nimănui încă."
           items={given}
           deleteEntry={deleteEntry}
+          onEdit={setEditingEntry}
           onPhoto={setLightbox}
+          confirmDeleteEntry={confirmDeleteEntry}
+          setConfirmDeleteEntry={setConfirmDeleteEntry}
           givenView
         />
 
@@ -486,6 +870,33 @@ export default function App() {
             ))}
           </div>
           <AddMemberInline value={newMemberName} setValue={setNewMemberName} onAdd={addMember} />
+        </div>
+
+        <div className="px-5 mt-6 grid grid-cols-4 gap-2">
+          <button
+            onClick={() => setShowStats(true)}
+            className="flex flex-col items-center justify-center gap-1 text-xs font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded-xl py-3 hover:bg-violet-100 transition-colors active:scale-95"
+          >
+            <Award size={16} /> Clasament
+          </button>
+          <button
+            onClick={() => setShowWheel(true)}
+            className="flex flex-col items-center justify-center gap-1 text-xs font-medium text-pink-700 bg-pink-50 border border-pink-200 rounded-xl py-3 hover:bg-pink-100 transition-colors active:scale-95"
+          >
+            <Dices size={16} /> Roata
+          </button>
+          <button
+            onClick={() => setShowCalendar(true)}
+            className="flex flex-col items-center justify-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-xl py-3 hover:bg-blue-100 transition-colors active:scale-95"
+          >
+            <CalendarIcon size={16} /> Calendar
+          </button>
+          <button
+            onClick={() => exportCSV(entries, members)}
+            className="flex flex-col items-center justify-center gap-1 text-xs font-medium text-gray-600 bg-white/70 border border-gray-200 rounded-xl py-3 hover:bg-gray-50 transition-colors active:scale-95"
+          >
+            ⬇️ Export
+          </button>
         </div>
 
         <button
@@ -510,7 +921,26 @@ export default function App() {
           />
         )}
 
-        {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+        {lightbox && <Lightbox photos={lightbox} onClose={() => setLightbox(null)} />}
+        {editingEntry && (
+          <EditAmountModal
+            entry={editingEntry}
+            onSave={(amt) => editEntryAmount(editingEntry.id, amt)}
+            onClose={() => setEditingEntry(null)}
+          />
+        )}
+        {showStats && <StatsScreen members={members} entries={entries} onClose={() => setShowStats(false)} />}
+        {showWheel && (
+          <WheelModal
+            members={members}
+            onClose={() => setShowWheel(false)}
+            onResult={recordWheelResult}
+            playChime={playChime}
+          />
+        )}
+        {showCalendar && (
+          <CalendarModal entries={entries} onClose={() => setShowCalendar(false)} onPhoto={setLightbox} />
+        )}
       </div>
     </>
   );
@@ -538,7 +968,10 @@ function AddMemberInline({ value, setValue, onAdd }) {
         placeholder="Nume"
         className="flex-1 bg-white border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
       />
-      <button onClick={onAdd} className="bg-gradient-to-br from-amber-400 to-orange-500 text-white text-sm font-medium rounded-xl px-4 active:scale-95 transition-transform">
+      <button
+        onClick={onAdd}
+        className="bg-gradient-to-br from-amber-400 to-orange-500 text-white text-sm font-medium rounded-xl px-4 active:scale-95 transition-transform"
+      >
         Adaugă
       </button>
       <button onClick={() => setOpen(false)} className="text-sm text-gray-400 px-2">
@@ -548,22 +981,32 @@ function AddMemberInline({ value, setValue, onAdd }) {
   );
 }
 
-function EntryCard({ e, me, deleteEntry, onPhoto, delay = 0 }) {
+function EntryCard({ e, me, deleteEntry, onPhoto, onEdit, confirmDeleteEntry, setConfirmDeleteEntry, delay = 0 }) {
   const isReceived = e.to === me;
   const other = isReceived ? e.from : e.to;
+  const photos = photosOf(e);
+  const pendingDelete = confirmDeleteEntry === e.id;
+
   return (
     <div
       style={{ animationDelay: `${delay}ms` }}
       className="animate-fadein rounded-2xl border border-gray-200/70 bg-white/70 backdrop-blur-sm shadow-sm px-4 py-3 flex items-center justify-between gap-3 hover:shadow-md transition-shadow"
     >
       <div className="flex items-center gap-3 min-w-0">
-        {e.photo ? (
-          <img
-            src={e.photo}
-            onClick={() => onPhoto(e.photo)}
-            className="w-12 h-12 rounded-xl object-cover shrink-0 cursor-pointer active:scale-95 transition-transform"
-            alt=""
-          />
+        {photos.length > 0 ? (
+          <div className="relative shrink-0">
+            <img
+              src={photos[0]}
+              onClick={() => onPhoto(photos)}
+              className="w-12 h-12 rounded-xl object-cover cursor-pointer active:scale-95 transition-transform"
+              alt=""
+            />
+            {photos.length > 1 && (
+              <span className="absolute -bottom-1 -right-1 bg-gray-900 text-white text-[10px] rounded-full w-5 h-5 flex items-center justify-center">
+                +{photos.length - 1}
+              </span>
+            )}
+          </div>
         ) : (
           <Avatar name={other} size={10} />
         )}
@@ -595,24 +1038,49 @@ function EntryCard({ e, me, deleteEntry, onPhoto, delay = 0 }) {
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <span className="text-lg font-bold bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent">
-          {e.amount.toFixed(0)} lei
-        </span>
-        {deleteEntry && (
-          <button
-            onClick={() => deleteEntry(e.id)}
-            className="text-gray-400 hover:text-red-600 transition-colors"
-            aria-label="Șterge"
-          >
-            <X size={16} />
-          </button>
+        {pendingDelete ? (
+          <div className="flex items-center gap-1.5 animate-popin">
+            <span className="text-xs text-gray-500">Sigur?</span>
+            <button
+              onClick={() => deleteEntry(e.id)}
+              className="text-xs bg-red-600 text-white px-2 py-1 rounded-lg font-medium"
+            >
+              Da
+            </button>
+            <button
+              onClick={() => setConfirmDeleteEntry(null)}
+              className="text-xs text-gray-400 px-2 py-1"
+            >
+              Nu
+            </button>
+          </div>
+        ) : (
+          <>
+            <span
+              onClick={onEdit ? onEdit : undefined}
+              className={`text-lg font-bold bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent ${
+                onEdit ? "cursor-pointer" : ""
+              }`}
+            >
+              {e.amount.toFixed(0)} lei
+            </span>
+            {deleteEntry && (
+              <button
+                onClick={() => setConfirmDeleteEntry(e.id)}
+                className="text-gray-400 hover:text-red-600 transition-colors"
+                aria-label="Șterge"
+              >
+                <X size={16} />
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>
   );
 }
 
-function Section({ title, icon, empty, items, deleteEntry, givenView, onPhoto }) {
+function Section({ title, icon, empty, items, deleteEntry, givenView, onPhoto, onEdit, confirmDeleteEntry, setConfirmDeleteEntry }) {
   return (
     <div className="px-5 mt-7">
       <div className="flex items-center gap-2 text-gray-500 text-xs uppercase tracking-wider mb-3">
@@ -628,7 +1096,10 @@ function Section({ title, icon, empty, items, deleteEntry, givenView, onPhoto })
               e={e}
               me={givenView ? e.from : e.to}
               deleteEntry={deleteEntry}
+              onEdit={onEdit ? () => onEdit(e) : null}
               onPhoto={onPhoto}
+              confirmDeleteEntry={confirmDeleteEntry}
+              setConfirmDeleteEntry={setConfirmDeleteEntry}
               delay={i * 40}
             />
           ))}
@@ -638,13 +1109,37 @@ function Section({ title, icon, empty, items, deleteEntry, givenView, onPhoto })
   );
 }
 
-function Lightbox({ src, onClose }) {
+function Lightbox({ photos, onClose }) {
+  const [idx, setIdx] = useState(0);
+  const list = Array.isArray(photos) ? photos : [photos];
   return (
-    <div
-      className="fixed inset-0 bg-black/80 flex items-center justify-center z-30 p-6 animate-fadein"
-      onClick={onClose}
-    >
-      <img src={src} className="max-w-full max-h-full rounded-2xl animate-popin" alt="" />
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-30 p-6 animate-fadein">
+      <img src={list[idx]} className="max-w-full max-h-full rounded-2xl animate-popin" alt="" />
+      {list.length > 1 && (
+        <>
+          <button
+            onClick={(ev) => {
+              ev.stopPropagation();
+              setIdx((idx - 1 + list.length) % list.length);
+            }}
+            className="absolute left-4 text-white bg-white/10 rounded-full p-2"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <button
+            onClick={(ev) => {
+              ev.stopPropagation();
+              setIdx((idx + 1) % list.length);
+            }}
+            className="absolute right-16 text-white bg-white/10 rounded-full p-2"
+          >
+            <ArrowRight size={20} />
+          </button>
+          <div className="absolute bottom-6 text-white text-xs">
+            {idx + 1} / {list.length}
+          </div>
+        </>
+      )}
       <button onClick={onClose} className="absolute top-6 right-6 text-white">
         <X size={28} />
       </button>
@@ -673,9 +1168,7 @@ function LoginScreen({
       </div>
       <h1 className="text-3xl font-extrabold text-gray-900">Caietul de cinste</h1>
       <p className="text-gray-500 text-sm mt-2 text-center max-w-xs">
-        {members.length === 0
-          ? "Grupul e gol — adaugă primul nume ca să începeți."
-          : "Cine ești tu din grup?"}
+        {members.length === 0 ? "Grupul e gol — adaugă primul nume ca să începeți." : "Cine ești tu din grup?"}
       </p>
       <p className="text-[11px] mt-1 flex items-center gap-1">
         <span className={`inline-block w-1.5 h-1.5 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`} />
@@ -696,10 +1189,7 @@ function LoginScreen({
               </button>
               {confirmDelete === m ? (
                 <div className="flex gap-1 animate-popin">
-                  <button
-                    onClick={() => deleteMember(m)}
-                    className="text-xs bg-red-600 text-white px-2 py-1 rounded-lg"
-                  >
+                  <button onClick={() => deleteMember(m)} className="text-xs bg-red-600 text-white px-2 py-1 rounded-lg">
                     Șterge
                   </button>
                   <button onClick={() => setConfirmDelete(null)} className="text-xs text-gray-400 px-2 py-1">
@@ -775,19 +1265,24 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
     });
   }
 
-  async function handlePhoto(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function handlePhotos(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     setUploading(true);
     try {
-      const base64 = await fileToCompressedBase64(file);
-      setForm((f) => ({ ...f, photo: base64 }));
+      const compressed = await Promise.all(files.map(fileToCompressedBase64));
+      setForm((f) => ({ ...f, photos: [...f.photos, ...compressed] }));
     } catch (err) {}
     setUploading(false);
+    e.target.value = "";
+  }
+
+  function removePhoto(idx) {
+    setForm((f) => ({ ...f, photos: f.photos.filter((_, i) => i !== idx) }));
   }
 
   const chosenCount = form.targets.length > 0 ? form.targets.length : others.length;
-  const divisorPreview = form.type === "cinste" && form.excludeMe ? chosenCount + 1 : chosenCount;
+  const divisorPreview = form.type === "cinste" && form.includeMe ? chosenCount + 1 : chosenCount;
   const share = form.amount ? (parseFloat(form.amount) / divisorPreview).toFixed(1) : null;
 
   return (
@@ -804,9 +1299,7 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
           <button
             onClick={() => setForm({ ...form, type: "cinste" })}
             className={`flex-1 py-2 rounded-xl text-sm border transition-all ${
-              form.type === "cinste"
-                ? "border-amber-500 text-amber-700 bg-amber-50 shadow-sm"
-                : "border-gray-300 text-gray-600"
+              form.type === "cinste" ? "border-amber-500 text-amber-700 bg-amber-50 shadow-sm" : "border-gray-300 text-gray-600"
             }`}
           >
             Fac cinste
@@ -814,9 +1307,7 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
           <button
             onClick={() => setForm({ ...form, type: "rambursare", targets: form.targets.slice(0, 1) })}
             className={`flex-1 py-2 rounded-xl text-sm border transition-all ${
-              form.type === "rambursare"
-                ? "border-blue-500 text-blue-700 bg-blue-50 shadow-sm"
-                : "border-gray-300 text-gray-600"
+              form.type === "rambursare" ? "border-blue-500 text-blue-700 bg-blue-50 shadow-sm" : "border-gray-300 text-gray-600"
             }`}
           >
             Dau banii înapoi
@@ -871,26 +1362,24 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
           <label className="flex items-center gap-2 mb-3 cursor-pointer select-none">
             <button
               type="button"
-              onClick={() => setForm({ ...form, excludeMe: !form.excludeMe })}
+              onClick={() => setForm({ ...form, includeMe: !form.includeMe })}
               className={`w-10 h-6 rounded-full transition-colors relative shrink-0 ${
-                form.excludeMe ? "bg-amber-500" : "bg-gray-300"
+                form.includeMe ? "bg-amber-500" : "bg-gray-300"
               }`}
             >
               <span
                 className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  form.excludeMe ? "translate-x-4" : ""
+                  form.includeMe ? "translate-x-4" : ""
                 }`}
               />
             </button>
-            <span className="text-xs text-gray-600">
-              Exclude-mă — suma include și partea mea, împarte la toată gașca
-            </span>
+            <span className="text-xs text-gray-600">Include-mă în preț — suma e pentru toată gașca, inclusiv eu</span>
           </label>
         )}
 
         {form.type === "cinste" && form.amount && chosenCount > 0 && (
           <p className="text-xs text-gray-500 mb-4">
-            {form.excludeMe
+            {form.includeMe
               ? `Se împarte la ${divisorPreview} (tu + ${chosenCount}): ${share} lei de fiecare, tu nu plătești`
               : chosenCount > 1
               ? `Se împarte egal: ${share} lei × ${chosenCount} persoane`
@@ -906,33 +1395,36 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
           className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-amber-500 mb-4"
         />
 
-        <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Poză (opțional)</p>
-        {form.photo ? (
-          <div className="relative w-24 h-24 mb-4 animate-popin">
-            <img src={form.photo} className="w-24 h-24 rounded-xl object-cover shadow-sm" alt="" />
-            <button
-              onClick={() => setForm({ ...form, photo: null })}
-              className="absolute -top-2 -right-2 bg-white rounded-full shadow p-1 border border-gray-200"
-            >
-              <X size={14} />
-            </button>
+        <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Poze (opțional, poți adăuga mai multe)</p>
+        {form.photos.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {form.photos.map((p, idx) => (
+              <div key={idx} className="relative w-20 h-20 animate-popin">
+                <img src={p} className="w-20 h-20 rounded-xl object-cover shadow-sm" alt="" />
+                <button
+                  onClick={() => removePhoto(idx)}
+                  className="absolute -top-2 -right-2 bg-white rounded-full shadow p-1 border border-gray-200"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
           </div>
-        ) : (
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="w-full flex items-center justify-center gap-2 text-sm text-gray-500 border border-dashed border-gray-300 rounded-xl py-3 mb-4 hover:border-amber-400 hover:text-amber-600 transition-colors"
-          >
-            {uploading ? (
-              "se încarcă…"
-            ) : (
-              <>
-                <Camera size={16} /> Atașează o poză
-              </>
-            )}
-          </button>
         )}
-        <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} className="hidden" />
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={uploading}
+          className="w-full flex items-center justify-center gap-2 text-sm text-gray-500 border border-dashed border-gray-300 rounded-xl py-3 mb-4 hover:border-amber-400 hover:text-amber-600 transition-colors"
+        >
+          {uploading ? (
+            "se încarcă…"
+          ) : (
+            <>
+              <Camera size={16} /> {form.photos.length > 0 ? "Adaugă încă o poză" : "Atașează o poză"}
+            </>
+          )}
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" multiple onChange={handlePhotos} className="hidden" />
 
         <button
           onClick={onSubmit}
@@ -940,6 +1432,467 @@ function AddEntryModal({ me, members, form, setForm, onSubmit, onClose }) {
         >
           Salvează
         </button>
+      </div>
+    </div>
+  );
+}
+
+function EditAmountModal({ entry, onSave, onClose }) {
+  const [val, setVal] = useState(String(entry.amount));
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-40 px-4 animate-fadein">
+      <div className="bg-white rounded-3xl w-full max-w-xs p-5 shadow-2xl animate-popin">
+        <h3 className="text-lg font-bold mb-3">Corectează suma</h3>
+        <p className="text-xs text-gray-500 mb-2">
+          {entry.from} → {entry.to}
+        </p>
+        <input
+          type="number"
+          inputMode="decimal"
+          autoFocus
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-lg font-semibold focus:outline-none focus:border-amber-500 mb-4"
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              const n = parseFloat(val);
+              if (n > 0) onSave(n);
+            }}
+            className="flex-1 bg-gradient-to-br from-amber-400 to-orange-500 text-white font-semibold rounded-xl py-2.5 active:scale-95 transition-transform"
+          >
+            Salvează
+          </button>
+          <button onClick={onClose} className="px-4 text-sm text-gray-500 rounded-xl border border-gray-300">
+            Anulează
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatsScreen({ members, entries, onClose }) {
+  const stats = computeStats(members, entries);
+  const monthStats = computeStats(members, monthEntries(entries));
+  const now = new Date();
+  const monthName = now.toLocaleDateString("ro-RO", { month: "long" });
+
+  const winners = BADGES.map((b) => {
+    const w = b.pick(stats);
+    return w && b.show(w) ? { ...b, winner: w } : null;
+  }).filter(Boolean);
+
+  const monthlyWinners = MONTHLY_AWARDS.map((b) => {
+    const w = b.pick(monthStats);
+    return w && b.show(w) ? { ...b, winner: w } : null;
+  }).filter(Boolean);
+
+  const sortedByNet = stats.slice().sort((a, b) => b.net - a.net);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 flex items-end sm:items-center justify-center animate-fadein">
+      <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-md p-5 pb-8 max-h-[88vh] overflow-y-auto animate-slideup shadow-2xl">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-xl font-bold">🏆 Clasamentul grupului</h2>
+          <button onClick={onClose} className="text-gray-400">
+            <X size={20} />
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">se actualizează live, pe baza istoricului vostru</p>
+
+        {monthlyWinners.length > 0 && (
+          <>
+            <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">
+              Premiile lunii {monthName}
+            </p>
+            <div className="space-y-2 mb-6">
+              {monthlyWinners.map((w, i) => (
+                <div
+                  key={w.key}
+                  style={{ animationDelay: `${i * 70}ms` }}
+                  className={`animate-popin rounded-2xl p-4 text-white bg-gradient-to-br ${w.color} shadow-lg flex items-center gap-3`}
+                >
+                  <Avatar name={w.winner.name} size={11} />
+                  <div className="min-w-0">
+                    <p className="font-bold text-sm">{w.title}</p>
+                    <p className="text-xs opacity-90">
+                      {w.winner.name} · {w.metric(w.winner)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Porecle generale</p>
+        {winners.length === 0 ? (
+          <p className="text-sm text-gray-400 italic mb-6">Nu sunt încă destule date pentru porecle.</p>
+        ) : (
+          <div className="space-y-2 mb-6">
+            {winners.map((w, i) => (
+              <div
+                key={w.key}
+                style={{ animationDelay: `${i * 70}ms` }}
+                className={`animate-popin rounded-2xl p-4 text-white bg-gradient-to-br ${w.color} shadow-lg flex items-center gap-3`}
+              >
+                <Avatar name={w.winner.name} size={11} />
+                <div className="min-w-0">
+                  <p className="font-bold text-sm">{w.title}</p>
+                  <p className="text-xs opacity-90">
+                    {w.winner.name} · {w.metric(w.winner)}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Clasament general (balanță netă)</p>
+        <div className="space-y-1.5">
+          {sortedByNet.map((s, i) => (
+            <div key={s.name} className="flex items-center justify-between px-3 py-2 rounded-xl bg-gray-50">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <span className="text-xs text-gray-400 w-4">{i + 1}.</span>
+                <Avatar name={s.name} size={6} />
+                {s.name}
+              </span>
+              <span
+                className={`text-sm font-semibold ${
+                  s.net === 0 ? "text-gray-400" : s.net > 0 ? "text-green-600" : "text-red-600"
+                }`}
+              >
+                {s.net > 0 ? "+" : ""}
+                {s.net} lei
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function polarPoint(cx, cy, r, angleDeg) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function sliceCenterAngle(i, total) {
+  const sliceAngle = 360 / total;
+  return (i + 0.5) * sliceAngle;
+}
+
+function WheelModal({ members, onClose, onResult }) {
+  const [selected, setSelected] = useState([]);
+  const [spinning, setSpinning] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [spinCount, setSpinCount] = useState(0);
+  const [winner, setWinner] = useState(null);
+
+  function toggle(name) {
+    setSelected((s) => (s.includes(name) ? s.filter((n) => n !== name) : [...s, name]));
+  }
+
+  function spin() {
+    if (selected.length < 2 || spinning) return;
+    setWinner(null);
+    const idx = Math.floor(Math.random() * selected.length);
+    const angle = sliceCenterAngle(idx, selected.length);
+    const nextSpinCount = spinCount + 1;
+    const targetRotation = nextSpinCount * 360 * 5 - angle;
+    setSpinCount(nextSpinCount);
+    setSpinning(true);
+    setRotation(targetRotation);
+    setTimeout(() => {
+      setSpinning(false);
+      setWinner(selected[idx]);
+      if (onResult) onResult(selected[idx], selected);
+      playChime();
+      if (navigator.vibrate) navigator.vibrate([30, 40, 30, 40, 60]);
+    }, 4000);
+  }
+
+  const size = 260;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2 - 6;
+  const sliceAngle = selected.length > 0 ? 360 / selected.length : 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-end sm:items-center justify-center animate-fadein">
+      <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-5 pb-8 max-h-[92vh] overflow-y-auto animate-slideup shadow-2xl">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xl font-bold flex items-center gap-2">
+            <Dices size={20} className="text-pink-500" /> Roata norocului
+          </h2>
+          <button onClick={onClose} className="text-gray-400">
+            <X size={20} />
+          </button>
+        </div>
+
+        <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Cine intră la roată</p>
+        <div className="flex flex-wrap gap-2 mb-5">
+          {members.map((m) => {
+            const active = selected.includes(m);
+            return (
+              <button
+                key={m}
+                onClick={() => toggle(m)}
+                className={`px-3 py-1.5 rounded-full text-sm border flex items-center gap-1 transition-all ${
+                  active ? "border-pink-500 text-pink-700 bg-pink-50 shadow-sm" : "border-gray-300 text-gray-600"
+                }`}
+              >
+                {active && <Check size={12} />}
+                {m}
+              </button>
+            );
+          })}
+        </div>
+
+        {selected.length < 2 ? (
+          <p className="text-xs text-gray-400 mb-4">Alege cel puțin 2 persoane ca să poți învârti roata.</p>
+        ) : (
+          <div className="flex flex-col items-center mb-5">
+            <div className="relative" style={{ width: size, height: size }}>
+              <div
+                className="absolute left-1/2 -top-2 -translate-x-1/2 z-10"
+                style={{
+                  width: 0,
+                  height: 0,
+                  borderLeft: "10px solid transparent",
+                  borderRight: "10px solid transparent",
+                  borderTop: "18px solid #1f2937",
+                }}
+              />
+              <svg
+                width={size}
+                height={size}
+                style={{
+                  transform: `rotate(${rotation}deg)`,
+                  transition: spinning ? "transform 4s cubic-bezier(0.17, 0.67, 0.12, 0.99)" : "none",
+                }}
+              >
+                {selected.map((name, i) => {
+                  const startAngle = i * sliceAngle;
+                  const endAngle = (i + 1) * sliceAngle;
+                  const p1 = polarPoint(cx, cy, r, startAngle);
+                  const p2 = polarPoint(cx, cy, r, endAngle);
+                  const largeArc = sliceAngle > 180 ? 1 : 0;
+                  const path = `M ${cx} ${cy} L ${p1.x} ${p1.y} A ${r} ${r} 0 ${largeArc} 1 ${p2.x} ${p2.y} Z`;
+                  const labelPos = polarPoint(cx, cy, r * 0.62, startAngle + sliceAngle / 2);
+                  return (
+                    <g key={name}>
+                      <path d={path} fill={WHEEL_COLORS[i % WHEEL_COLORS.length]} stroke="white" strokeWidth="2" />
+                      <text
+                        x={labelPos.x}
+                        y={labelPos.y}
+                        fill="white"
+                        fontSize="13"
+                        fontWeight="700"
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        transform={`rotate(${startAngle + sliceAngle / 2}, ${labelPos.x}, ${labelPos.y})`}
+                      >
+                        {name.length > 10 ? name.slice(0, 9) + "…" : name}
+                      </text>
+                    </g>
+                  );
+                })}
+                <circle cx={cx} cy={cy} r="14" fill="white" stroke="#e5e7eb" strokeWidth="2" />
+              </svg>
+            </div>
+
+            <button
+              onClick={spin}
+              disabled={spinning}
+              className="mt-5 w-full bg-gradient-to-br from-pink-500 to-rose-500 text-white font-semibold rounded-xl py-3 active:scale-[0.98] transition-transform shadow-lg shadow-pink-500/30 disabled:opacity-60"
+            >
+              {spinning ? "Se învârte…" : "🎡 Învârte roata"}
+            </button>
+
+            {winner && !spinning && (
+              <div className="mt-4 w-full text-center animate-popin bg-gradient-to-br from-amber-400 to-orange-500 text-white rounded-2xl p-4">
+                <p className="text-sm opacity-90">A picat pe...</p>
+                <p className="text-2xl font-extrabold flex items-center justify-center gap-2 mt-1">
+                  <Avatar name={winner} size={9} /> {winner}
+                </p>
+                <p className="text-sm mt-1 opacity-90">plătește! 🎉</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const RO_DAYS = ["Lu", "Ma", "Mi", "Jo", "Vi", "Sb", "Du"];
+const RO_MONTHS = [
+  "Ianuarie", "Februarie", "Martie", "Aprilie", "Mai", "Iunie",
+  "Iulie", "August", "Septembrie", "Octombrie", "Noiembrie", "Decembrie",
+];
+
+function sameDay(ts, y, m, d) {
+  const dt = new Date(ts);
+  return dt.getFullYear() === y && dt.getMonth() === m && dt.getDate() === d;
+}
+
+function CalendarModal({ entries, onClose, onPhoto }) {
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+  const [selectedDay, setSelectedDay] = useState(null);
+
+  const firstOfMonth = new Date(viewYear, viewMonth, 1);
+  const startOffset = (firstOfMonth.getDay() + 6) % 7; // Monday = 0
+  const daysCount = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysCount; d++) cells.push(d);
+
+  function entriesForDay(d) {
+    if (!d) return [];
+    return entries.filter((e) => e.date && sameDay(e.date, viewYear, viewMonth, d));
+  }
+
+  function changeMonth(delta) {
+    setSelectedDay(null);
+    let m = viewMonth + delta;
+    let y = viewYear;
+    if (m < 0) {
+      m = 11;
+      y -= 1;
+    } else if (m > 11) {
+      m = 0;
+      y += 1;
+    }
+    setViewMonth(m);
+    setViewYear(y);
+  }
+
+  const dayEntries = selectedDay ? entriesForDay(selectedDay) : [];
+  const isToday = (d) => d === today.getDate() && viewMonth === today.getMonth() && viewYear === today.getFullYear();
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 flex items-end sm:items-center justify-center animate-fadein">
+      <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-md p-5 pb-8 max-h-[90vh] overflow-y-auto animate-slideup shadow-2xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold flex items-center gap-2">
+            <CalendarIcon size={20} className="text-blue-500" /> Calendar
+          </h2>
+          <button onClick={onClose} className="text-gray-400">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between mb-4">
+          <button
+            onClick={() => changeMonth(-1)}
+            className="p-2 rounded-full border border-gray-200 text-gray-500 hover:bg-gray-50 active:scale-90 transition-transform"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <p className="font-semibold text-gray-900">
+            {RO_MONTHS[viewMonth]} {viewYear}
+          </p>
+          <button
+            onClick={() => changeMonth(1)}
+            className="p-2 rounded-full border border-gray-200 text-gray-500 hover:bg-gray-50 active:scale-90 transition-transform"
+          >
+            <ArrowRight size={16} />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {RO_DAYS.map((d) => (
+            <div key={d} className="text-center text-[10px] uppercase tracking-wide text-gray-400 py-1">
+              {d}
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 mb-5">
+          {cells.map((d, i) => {
+            if (!d) return <div key={i} />;
+            const dayEs = entriesForDay(d);
+            const total = dayEs.reduce((s, e) => s + (e.amount || 0), 0);
+            const active = selectedDay === d;
+            return (
+              <button
+                key={i}
+                onClick={() => setSelectedDay(active ? null : d)}
+                className={`aspect-square rounded-xl flex flex-col items-center justify-center text-xs relative transition-all ${
+                  active
+                    ? "bg-amber-500 text-white shadow-md scale-105"
+                    : isToday(d)
+                    ? "border border-amber-400 text-gray-900"
+                    : "text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                <span className="font-medium">{d}</span>
+                {dayEs.length > 0 && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full mt-0.5 ${
+                      active ? "bg-white" : "bg-amber-500"
+                    }`}
+                  />
+                )}
+                {total > 0 && !active && (
+                  <span className="absolute -bottom-1 text-[8px] text-amber-600 font-semibold">
+                    {Math.round(total)}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {selectedDay && (
+          <div className="animate-fadein">
+            <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">
+              {selectedDay} {RO_MONTHS[viewMonth]} — {dayEntries.length} tranzacții
+            </p>
+            {dayEntries.length === 0 ? (
+              <p className="text-sm text-gray-400 italic">Nimic în ziua asta.</p>
+            ) : (
+              <div className="space-y-2">
+                {dayEntries.map((e) => {
+                  const photos = photosOf(e);
+                  return (
+                    <div
+                      key={e.id}
+                      className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {photos.length > 0 ? (
+                          <img
+                            src={photos[0]}
+                            onClick={() => onPhoto(photos)}
+                            className="w-10 h-10 rounded-lg object-cover cursor-pointer shrink-0"
+                            alt=""
+                          />
+                        ) : (
+                          <Avatar name={e.from} size={8} />
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-900 flex items-center gap-1.5">
+                            {e.from} <ArrowRight size={11} className="text-gray-400" /> {e.to}
+                          </p>
+                          {e.note && <p className="text-xs text-gray-500 truncate">{e.note}</p>}
+                        </div>
+                      </div>
+                      <span className="text-sm font-bold text-amber-600 shrink-0">{e.amount.toFixed(0)} lei</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
