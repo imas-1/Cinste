@@ -13,6 +13,7 @@ import {
   Trash2,
   Camera,
 } from "lucide-react";
+import { Analytics } from "@vercel/analytics/react";
 import { db } from "./firebase";
 import { ref, onValue, set, push, remove } from "firebase/database";
 
@@ -281,6 +282,7 @@ export default function App() {
           setConfirmDelete={setConfirmDelete}
           deleteMember={deleteMember}
         />
+        <Analytics />
       </>
     );
   }
@@ -344,6 +346,7 @@ export default function App() {
           </div>
         </div>
         {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+        <Analytics />
       </>
     );
   }
@@ -512,6 +515,7 @@ export default function App() {
 
         {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
       </div>
+      <Analytics />
     </>
   );
 }
