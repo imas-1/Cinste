@@ -13,6 +13,7 @@ import {
   Trash2,
   Camera,
 } from "lucide-react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import { db } from "./firebase";
 import { ref, onValue, set, push, remove } from "firebase/database";
 
@@ -268,6 +269,7 @@ export default function App() {
     return (
       <>
         <BackgroundBlobs />
+        <SpeedInsights />
         <LoginScreen
           members={members}
           onPick={setMe}
@@ -304,6 +306,7 @@ export default function App() {
     return (
       <>
         <BackgroundBlobs />
+        <SpeedInsights />
         <div className="min-h-screen text-gray-900 font-sans pb-24 animate-slideinright">
           <div className="border-b border-gray-200/70 px-5 pt-6 pb-5 sticky top-0 bg-white/80 backdrop-blur-md z-10">
             <button
@@ -357,6 +360,7 @@ export default function App() {
     <>
       <BackgroundBlobs />
       <Confetti trigger={confetti} />
+      <SpeedInsights />
       <div className="min-h-screen text-gray-900 font-sans pb-24 animate-fadein">
         <div className="border-b border-gray-200/70 px-5 pt-6 pb-5 sticky top-0 bg-white/80 backdrop-blur-md z-10">
           <div className="flex items-center justify-between">
